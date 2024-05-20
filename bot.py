@@ -10,15 +10,21 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
 
+load_dotenv()
+
 TOKEN = os.getenv('TOKEN')
 
-# Подключаем логирование
+if TOKEN is None:
+    raise ValueError("No TOKEN provided. Please set the TOKEN environment variable.")
+
 logging.basicConfig(
     filename='/app/logfile.txt',
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     encoding="utf-8"
 )
+
+
 logger = logging.getLogger(__name__)
 
 def switch_command(argument):
