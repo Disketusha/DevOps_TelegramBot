@@ -1,6 +1,6 @@
 - hosts: localhost
   tasks:
-    - name: Convert .env.yml to .env format
+    - name: Конвертировать .env.yml в формат .env
       shell: |
         awk -F ': ' '{gsub(/"/, "", $2); gsub(/: /, "=", $1); print $1 "=" $2}' ./.env.yml > ./.env
 
@@ -8,19 +8,19 @@
   vars_files:
     - ./.env.yml
   tasks:
-    - name: Install PostgreSQL
+    - name: Установить PostgreSQL
       become: yes
       package:
         name: postgresql
         state: latest
 
-    - name: Restart PostgreSQL
+    - name: Перезапустить PostgreSQL
       become: yes
       service:
         name: postgresql
         state: restarted
 
-    - name: Enable PostgreSQL service
+    - name: Включить службу PostgreSQL
       become: true
       systemd:
         name: postgresql
@@ -28,23 +28,23 @@
         enabled: yes
         daemon-reload: yes
 
-    - name: Set password for PostgreSQL user "{{ DB_USER }}"
+    - name: Установить пароль для пользователя PostgreSQL "{{ DB_USER }}"
       become: yes
       become_user: postgres
       shell: "psql -c \"ALTER USER {{ DB_USER }} WITH PASSWORD '{{ DB_PASSWORD }}';\""
 
-    - name: Ensure the database exists
+    - name: Убедиться, что база данных существует
       become: yes
       become_user: postgres
       postgresql_db:
         name: "{{ DB_DATABASE }}"
         state: present
 
-    - name: Edit pg_hba to permit remote auth
+    - name: Изменить pg_hba для разрешения удаленной аутентификации
       become: yes
       become_user: postgres
       postgresql_pg_hba:
-        dest: /etc/postgresql/14/main/pg_hba.conf
+        dest: "/etc/postgresql/{{ DB_VERSION }}/main/pg_hba.conf"
         contype: "host"
         databases: "all"
         users: "all"
@@ -52,11 +52,11 @@
         method: "md5"
         create: true
 
-    - name: Edit pg_hba to permit remote replication
+    - name: Изменить pg_hba для разрешения удаленной репликации
       become: yes
       become_user: postgres
       postgresql_pg_hba:
-        dest: /etc/postgresql/14/main/pg_hba.conf
+        dest: "/etc/postgresql/{{ DB_VERSION }}/main/pg_hba.conf"
         contype: "host"
         databases: "replication"
         users: "all"
@@ -64,7 +64,7 @@
         method: "md5"
         create: true
 
-    - name: Edit postgresql.conf
+    - name: Изменить postgresql.conf
       become: yes
       become_user: postgres
       community.postgresql.postgresql_set:
@@ -84,7 +84,7 @@
         wal_log_hints: 'on'
         password_encryption: 'scram-sha-256'
 
-    - name: Check if replication user exists
+    - name: Проверить, существует ли пользователь репликации
       become: yes
       become_user: postgres
       command: "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='{{ DB_REPL_USER }}'\""
@@ -93,14 +93,14 @@
       changed_when: repl_user_check.stdout.strip() == '1'
       ignore_errors: true
 
-    - name: Create replication user '{{ DB_REPL_USER }}' with password '{{ DB_REPL_PASSWORD }}'
+    - name: Создать пользователя репликации '{{ DB_REPL_USER }}' с паролем '{{ DB_REPL_PASSWORD }}'
       become: yes
       become_user: postgres
       command: "psql -c \"CREATE USER {{ DB_REPL_USER }} REPLICATION LOGIN ENCRYPTED PASSWORD '{{ DB_REPL_PASSWORD }}';\""
       when: repl_user_check.stdout.strip() != '1'
       ignore_errors: yes
 
-    - name: Create tables if they do not exist
+    - name: Создать таблицы, если они не существуют
       become: yes
       become_user: postgres
       postgresql_query:
@@ -121,32 +121,32 @@
   vars_files:
     - .env.yml
   tasks:
-    - name: Install PostgreSQL
+    - name: Установить PostgreSQL
       become: yes
       package:
         name: postgresql
         state: latest
 
-    - name: Stop PostgreSQL service
+    - name: Остановить службу PostgreSQL
       become: yes
       systemd:
         name: postgresql
         state: stopped
 
-    - name: Clear replication directory
+    - name: Очистить директорию репликации
       become: yes
       ansible.builtin.file:
         state: absent
-        path: /var/lib/postgresql/14/main
+        path: /var/lib/postgresql/"{{ DB_VERSION }}"/main
 
-    - name: Start base backup from master
+    - name: Начать базовое резервное копирование с мастера
       become: yes
       become_user: postgres
-      shell: pg_basebackup -R -h "{{ DB_HOST }}" -U "{{ DB_REPL_USER }}" -D /var/lib/postgresql/14/main -P
+      shell: pg_basebackup -R -h "{{ DB_HOST }}" -U "{{ DB_REPL_USER }}" -D /var/lib/postgresql/"{{ DB_VERSION }}"/main -P
       environment:
         PGPASSWORD: "{{ DB_REPL_PASSWORD }}"
 
-    - name: Enable PostgreSQL service
+    - name: Включить службу PostgreSQL
       become: true
       systemd:
         name: postgresql
@@ -156,7 +156,7 @@
 
 - hosts: bot_host
   tasks:
-    - name: Install Git & pip3
+    - name: Установить Git и pip3
       become: yes
       apt:
         pkg:
@@ -164,13 +164,13 @@
           - python3-pip
           - libpq-dev
 
-    - name: Create project dir
+    - name: Создать директорию проекта
       become: yes
       file:
         path: /home/ansible/bot/
         state: directory
 
-    - name: Clone repo
+    - name: Клонировать репозиторий
       become: yes
       git:
         repo: "https://github.com/Disketusha/DevOps_TelegramBot.git"
@@ -178,7 +178,7 @@
         version: main
         force: yes
 
-    - name: Install Python modules
+    - name: Установить модули Python
       become: yes
       pip:
         name:
@@ -187,25 +187,25 @@
           - psycopg2-binary==2.9.3
           - python-dotenv==0.21.0
 
-    - name: Copy .env file to BOT_HOST
+    - name: Скопировать файл .env на BOT_HOST
       become: yes
       copy:
         src: ".env"
         dest: "/home/ansible/bot/.env"
 
-    - name: Create log directory
+    - name: Создать директорию для логов
       become: yes
       file:
         path: /app/
         state: directory
 
-    - name: Create log file
+    - name: Создать файл логов
       become: yes
       file:
         path: /app/logfile.txt
         state: touch
 
-    - name: Start bot.py
+    - name: Запустить bot.py
       become: yes
       shell: |
         cd /home/ansible/bot
