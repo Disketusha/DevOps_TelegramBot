@@ -94,39 +94,22 @@
       when: repl_user_check.stdout.strip() != '1'
       ignore_errors: yes
 
-    - name: Copy init.sql to DB_HOST
-      copy:
-        src: "init.sql"
-        dest: "~/init.sql"
-
-    - name: Read init.sql into a variable
-      slurp:
-        src: init.sql
-      register: init
-
-    - name: Check if database has been initialized
+    - name: Create tables if they do not exist
       become: yes
       become_user: postgres
       postgresql_query:
         db: "{{ DB_DATABASE }}"
-        query: "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='your_table_name';"
+        query: |
+          CREATE TABLE IF NOT EXISTS Email_add(
+            id SERIAL PRIMARY KEY,
+            EmailAddr VARCHAR(255)
+          );
+          CREATE TABLE IF NOT EXISTS Ph_number(
+            id SERIAL PRIMARY KEY,
+            PhoneNumber VARCHAR(20)
+          );
         login_user: "{{ DB_USER }}"
         login_password: "{{ DB_PASSWORD }}"
-      register: db_init_check
-      failed_when: db_init_check.rc not in [0, 1]
-      changed_when: db_init_check.stdout.strip() == '1'
-      ignore_errors: true
-
-    - name: Postgres initialization
-      become: yes
-      become_user: postgres
-      postgresql_query:
-        db: "{{ DB_DATABASE }}"
-        query: "{{ init.content | b64decode }}"
-        login_user: "{{ DB_USER }}"
-        login_password: "{{ DB_PASSWORD }}"
-      when: db_init_check.stdout.strip() != '1'
-      ignore_errors: yes
 
 - hosts: db_repl_host
   vars_files:
@@ -138,6 +121,25 @@
         name: postgresql
         state: latest
 
+    - name: Stop PostgreSQL service
+      become: yes
+      systemd:
+        name: postgresql
+        state: stopped
+
+    - name: Clear replication directory
+      become: yes
+      ansible.builtin.file:
+        state: absent
+        path: /var/lib/postgresql/15/main
+
+    - name: Start base backup from master
+      become: yes
+      become_user: postgres
+      shell: pg_basebackup -R -h "{{ DB_HOST }}" -U "{{ DB_REPL_USER }}" -D /var/lib/postgresql/15/main -P
+      environment:
+        PGPASSWORD: "{{ DB_REPL_PASSWORD }}"
+
     - name: Enable PostgreSQL service
       become: true
       systemd:
@@ -145,20 +147,6 @@
         state: started
         enabled: yes
         daemon-reload: yes
-
-    - name: Clear replication directory
-      become: yes
-      ansible.builtin.file:
-        state: absent
-        path: /var/lib/postgresql/data
-
-    - name: Replication
-      become: yes
-      become_user: postgres
-      environment:
-        PGUSER: "{{ DB_USER }}"
-        PGPASSWORD: "{{ DB_PASSWORD }}"
-      shell: pg_basebackup --pgdata=/var/lib/postgresql/data -R --host="{{ DB_HOST }}" --port="{{ DB_PORT }}"
 
 - hosts: bot_host
   tasks:
@@ -181,7 +169,8 @@
       git:
         repo: "https://github.com/Disketusha/DevOps_TelegramBot.git"
         dest: "/home/ansible/bot/"
-        version: docker
+        version: main
+        force: yes
 
     - name: Install Python modules
       become: yes
@@ -213,5 +202,5 @@
     - name: Start bot.py
       become: yes
       shell: |
-        cd /home/ansible/bot/devops_bot/bot
+        cd /home/ansible/bot
         export $(cat /home/ansible/bot/.env | xargs) && python3 bot.py
