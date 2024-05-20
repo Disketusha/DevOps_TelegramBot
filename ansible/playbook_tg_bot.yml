@@ -1,0 +1,217 @@
+- hosts: db_host
+  vars_files:
+    - ./vars.yml
+  tasks:
+    - name: Install PostgreSQL
+      become: yes
+      package:
+        name: postgresql
+        state: latest
+
+    - name: Restart PostgreSQL
+      become: yes
+      service:
+        name: postgresql
+        state: restarted
+
+    - name: Enable PostgreSQL service
+      become: true
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+        daemon-reload: yes
+
+    - name: Set password for PostgreSQL user "{{ DB_USER }}"
+      become: yes
+      become_user: postgres
+      shell: "psql -c \"ALTER USER {{ DB_USER }} WITH PASSWORD '{{ DB_PASSWORD }}';\""
+
+    - name: Ensure the database exists
+      become: yes
+      become_user: postgres
+      postgresql_db:
+        name: "{{ DB_DATABASE }}"
+        state: present
+
+    - name: Edit pg_hba to permit remote auth
+      become: yes
+      become_user: postgres
+      postgresql_pg_hba:
+        dest: /etc/postgresql/14/main/pg_hba.conf
+        contype: "host"
+        databases: "all"
+        users: "all"
+        source: "0.0.0.0/0"
+        method: "md5"
+        create: true
+
+    - name: Edit pg_hba to permit remote replication
+      become: yes
+      become_user: postgres
+      postgresql_pg_hba:
+        dest: /etc/postgresql/14/main/pg_hba.conf
+        contype: "host"
+        databases: "replication"
+        users: "all"
+        source: "0.0.0.0/0"
+        method: "md5"
+        create: true
+
+    - name: Edit postgresql.conf
+      become: yes
+      become_user: postgres
+      community.postgresql.postgresql_set:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+      with_dict:
+        max_connections: '100'
+        listen_addresses: '*'
+        log_replication_commands: 'on'
+        unix_socket_directories: '/var/run/postgresql'
+        logging_collector: 'on'
+        log_directory: '/tmp/'
+        log_filename: 'pg.log'
+        log_file_mode: '0664'
+        wal_level: 'replica'
+        max_wal_senders: '10'
+        wal_log_hints: 'on'
+        password_encryption: 'scram-sha-256'
+
+    - name: Check if replication user exists
+      become: yes
+      become_user: postgres
+      command: "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='{{ DB_REPL_USER }}'\""
+      register: repl_user_check
+      failed_when: repl_user_check.rc not in [0, 1]
+      changed_when: repl_user_check.stdout.strip() == '1'
+      ignore_errors: true
+
+    - name: Create replication user '{{ DB_REPL_USER }}' with password '{{ DB_REPL_PASSWORD }}'
+      become: yes
+      become_user: postgres
+      command: "psql -c \"CREATE USER {{ DB_REPL_USER }} REPLICATION LOGIN ENCRYPTED PASSWORD '{{ DB_REPL_PASSWORD }}';\""
+      when: repl_user_check.stdout.strip() != '1'
+      ignore_errors: yes
+
+    - name: Copy init.sql to DB_HOST
+      copy:
+        src: "init.sql"
+        dest: "~/init.sql"
+
+    - name: Read init.sql into a variable
+      slurp:
+        src: init.sql
+      register: init
+
+    - name: Check if database has been initialized
+      become: yes
+      become_user: postgres
+      postgresql_query:
+        db: "{{ DB_DATABASE }}"
+        query: "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='your_table_name';"
+        login_user: "{{ DB_USER }}"
+        login_password: "{{ DB_PASSWORD }}"
+      register: db_init_check
+      failed_when: db_init_check.rc not in [0, 1]
+      changed_when: db_init_check.stdout.strip() == '1'
+      ignore_errors: true
+
+    - name: Postgres initialization
+      become: yes
+      become_user: postgres
+      postgresql_query:
+        db: "{{ DB_DATABASE }}"
+        query: "{{ init.content | b64decode }}"
+        login_user: "{{ DB_USER }}"
+        login_password: "{{ DB_PASSWORD }}"
+      when: db_init_check.stdout.strip() != '1'
+      ignore_errors: yes
+
+- hosts: db_repl_host
+  vars_files:
+    - vars.yml
+  tasks:
+    - name: Install PostgreSQL
+      become: yes
+      package:
+        name: postgresql
+        state: latest
+
+    - name: Enable PostgreSQL service
+      become: true
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+        daemon-reload: yes
+
+    - name: Clear replication directory
+      become: yes
+      ansible.builtin.file:
+        state: absent
+        path: /var/lib/postgresql/data
+
+    - name: Replication
+      become: yes
+      become_user: postgres
+      environment:
+        PGUSER: "{{ DB_USER }}"
+        PGPASSWORD: "{{ DB_PASSWORD }}"
+      shell: pg_basebackup --pgdata=/var/lib/postgresql/data -R --host="{{ DB_HOST }}" --port="{{ DB_PORT }}"
+
+- hosts: bot_host
+  tasks:
+    - name: Install Git & pip3
+      become: yes
+      apt:
+        pkg:
+          - git
+          - python3-pip
+          - libpq-dev
+
+    - name: Create project dir
+      become: yes
+      file:
+        path: /home/ansible/bot/
+        state: directory
+
+    - name: Clone repo
+      become: yes
+      git:
+        repo: "https://github.com/Disketusha/DevOps_TelegramBot.git"
+        dest: "/home/ansible/bot/"
+        version: docker
+
+    - name: Install Python modules
+      become: yes
+      pip:
+        name:
+          - python-telegram-bot==13.14
+          - paramiko==2.12.0
+          - psycopg2-binary==2.9.3
+          - python-dotenv==0.21.0
+
+    - name: Copy .env file to BOT_HOST
+      become: yes
+      copy:
+        src: ".env"
+        dest: "/home/ansible/bot/.env"
+
+    - name: Create log directory
+      become: yes
+      file:
+        path: /app/
+        state: directory
+
+    - name: Create log file
+      become: yes
+      file:
+        path: /app/logfile.txt
+        state: touch
+
+    - name: Start bot.py
+      become: yes
+      shell: |
+        cd /home/ansible/bot/devops_bot/bot
+        export $(cat /home/ansible/bot/.env | xargs) && python3 bot.py
