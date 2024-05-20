@@ -1,6 +1,12 @@
+- hosts: localhost
+  tasks:
+    - name: Convert .env.yml to .env format
+      shell: |
+        awk -F ': ' '{gsub(/"/, "", $2); gsub(/: /, "=", $1); print $1 "=" $2}' ./.env.yml > ./.env
+
 - hosts: db_host
   vars_files:
-    - ./vars.yml
+    - ./.env.yml
   tasks:
     - name: Install PostgreSQL
       become: yes
@@ -113,7 +119,7 @@
 
 - hosts: db_repl_host
   vars_files:
-    - vars.yml
+    - .env.yml
   tasks:
     - name: Install PostgreSQL
       become: yes
@@ -131,12 +137,12 @@
       become: yes
       ansible.builtin.file:
         state: absent
-        path: /var/lib/postgresql/15/main
+        path: /var/lib/postgresql/14/main
 
     - name: Start base backup from master
       become: yes
       become_user: postgres
-      shell: pg_basebackup -R -h "{{ DB_HOST }}" -U "{{ DB_REPL_USER }}" -D /var/lib/postgresql/15/main -P
+      shell: pg_basebackup -R -h "{{ DB_HOST }}" -U "{{ DB_REPL_USER }}" -D /var/lib/postgresql/14/main -P
       environment:
         PGPASSWORD: "{{ DB_REPL_PASSWORD }}"
 
