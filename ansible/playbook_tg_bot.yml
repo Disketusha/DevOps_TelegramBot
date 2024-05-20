@@ -137,7 +137,7 @@
       become: yes
       ansible.builtin.file:
         state: absent
-        path: /var/lib/postgresql/"{{ DB_VERSION }}"/main
+        path: /var/lib/postgresql/{{ DB_VERSION }}/main
 
     - name: Начать базовое резервное копирование с мастера
       become: yes
