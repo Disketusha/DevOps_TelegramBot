@@ -43,7 +43,7 @@ def switch_command(argument):
         "ps": "ps aux",
         "ss": "ss -tulwn",
         "services": "service --status-all",
-	"repl": "tac /var/log/postgresql/$(ls -t /var/log/postgresql | head -n 1) | grep repl_user"
+	"repl": "tac /tmp/pg.log | grep repl"
     }
     return switcher.get(argument, "Invalid command")
 
