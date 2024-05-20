@@ -1,212 +1,227 @@
-- hosts: localhost
-  tasks:
-    - name: Конвертировать .env.yml в формат .env
-      shell: |
-        awk -F ': ' '{gsub(/"/, "", $2); gsub(/: /, "=", $1); print $1 "=" $2}' ./.env.yml > ./.env
-
-- hosts: db_host
-  vars_files:
-    - ./.env.yml
-  tasks:
-    - name: Установить PostgreSQL
-      become: yes
-      package:
-        name: postgresql
-        state: latest
-
-    - name: Перезапустить PostgreSQL
-      become: yes
-      service:
-        name: postgresql
-        state: restarted
-
-    - name: Включить службу PostgreSQL
-      become: true
-      systemd:
-        name: postgresql
-        state: started
-        enabled: yes
-        daemon-reload: yes
-
-    - name: Установить пароль для пользователя PostgreSQL "{{ DB_USER }}"
-      become: yes
-      become_user: postgres
-      shell: "psql -c \"ALTER USER {{ DB_USER }} WITH PASSWORD '{{ DB_PASSWORD }}';\""
-
-    - name: Убедиться, что база данных существует
-      become: yes
-      become_user: postgres
-      postgresql_db:
-        name: "{{ DB_DATABASE }}"
-        state: present
-
-    - name: Изменить pg_hba для разрешения удаленной аутентификации
-      become: yes
-      become_user: postgres
-      postgresql_pg_hba:
-        dest: "/etc/postgresql/{{ DB_VERSION }}/main/pg_hba.conf"
-        contype: "host"
-        databases: "all"
-        users: "all"
-        source: "0.0.0.0/0"
-        method: "md5"
-        create: true
-
-    - name: Изменить pg_hba для разрешения удаленной репликации
-      become: yes
-      become_user: postgres
-      postgresql_pg_hba:
-        dest: "/etc/postgresql/{{ DB_VERSION }}/main/pg_hba.conf"
-        contype: "host"
-        databases: "replication"
-        users: "all"
-        source: "0.0.0.0/0"
-        method: "md5"
-        create: true
-
-    - name: Изменить postgresql.conf
-      become: yes
-      become_user: postgres
-      community.postgresql.postgresql_set:
-        name: "{{ item.key }}"
-        value: "{{ item.value }}"
-      with_dict:
-        max_connections: '100'
-        listen_addresses: '*'
-        log_replication_commands: 'on'
-        unix_socket_directories: '/var/run/postgresql'
-        logging_collector: 'on'
-        log_directory: '/tmp/'
-        log_filename: 'pg.log'
-        log_file_mode: '0664'
-        wal_level: 'replica'
-        max_wal_senders: '10'
-        wal_log_hints: 'on'
-        password_encryption: 'scram-sha-256'
-
-    - name: Проверить, существует ли пользователь репликации
-      become: yes
-      become_user: postgres
-      command: "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='{{ DB_REPL_USER }}'\""
-      register: repl_user_check
-      failed_when: repl_user_check.rc not in [0, 1]
-      changed_when: repl_user_check.stdout.strip() == '1'
-      ignore_errors: true
-
-    - name: Создать пользователя репликации '{{ DB_REPL_USER }}' с паролем '{{ DB_REPL_PASSWORD }}'
-      become: yes
-      become_user: postgres
-      command: "psql -c \"CREATE USER {{ DB_REPL_USER }} REPLICATION LOGIN ENCRYPTED PASSWORD '{{ DB_REPL_PASSWORD }}';\""
-      when: repl_user_check.stdout.strip() != '1'
-      ignore_errors: yes
-
-    - name: Создать таблицы, если они не существуют
-      become: yes
-      become_user: postgres
-      postgresql_query:
-        db: "{{ DB_DATABASE }}"
-        query: |
-          CREATE TABLE IF NOT EXISTS Email_add(
-            id SERIAL PRIMARY KEY,
-            EmailAddr VARCHAR(255)
-          );
-          CREATE TABLE IF NOT EXISTS Ph_number(
-            id SERIAL PRIMARY KEY,
-            PhoneNumber VARCHAR(20)
-          );
-        login_user: "{{ DB_USER }}"
-        login_password: "{{ DB_PASSWORD }}"
-
-- hosts: db_repl_host
-  vars_files:
-    - .env.yml
-  tasks:
-    - name: Установить PostgreSQL
-      become: yes
-      package:
-        name: postgresql
-        state: latest
-
-    - name: Остановить службу PostgreSQL
-      become: yes
-      systemd:
-        name: postgresql
-        state: stopped
-
-    - name: Очистить директорию репликации
-      become: yes
-      ansible.builtin.file:
-        state: absent
-        path: /var/lib/postgresql/{{ DB_VERSION }}/main
-
-    - name: Начать базовое резервное копирование с мастера
-      become: yes
-      become_user: postgres
-      shell: pg_basebackup -R -h "{{ DB_HOST }}" -U "{{ DB_REPL_USER }}" -D /var/lib/postgresql/"{{ DB_VERSION }}"/main -P
-      environment:
-        PGPASSWORD: "{{ DB_REPL_PASSWORD }}"
-
-    - name: Включить службу PostgreSQL
-      become: true
-      systemd:
-        name: postgresql
-        state: started
-        enabled: yes
-        daemon-reload: yes
-
-- hosts: bot_host
-  tasks:
-    - name: Установить Git и pip3
-      become: yes
-      apt:
-        pkg:
-          - git
-          - python3-pip
-          - libpq-dev
-
-    - name: Создать директорию проекта
-      become: yes
-      file:
-        path: /home/ansible/bot/
-        state: directory
-
-    - name: Клонировать репозиторий
-      become: yes
-      git:
-        repo: "https://github.com/Disketusha/DevOps_TelegramBot.git"
-        dest: "/home/ansible/bot/"
-        version: main
-        force: yes
-
-    - name: Установить модули Python
-      become: yes
-      pip:
-        name:
-          - python-telegram-bot==13.14
-          - paramiko==2.12.0
-          - psycopg2-binary==2.9.3
-          - python-dotenv==0.21.0
-
-    - name: Скопировать файл .env на BOT_HOST
-      become: yes
-      copy:
-        src: ".env"
-        dest: "/home/ansible/bot/.env"
-
-    - name: Создать директорию для логов
-      become: yes
-      file:
-        path: /app/
-        state: directory
-
-    - name: Создать файл логов
-      become: yes
-      file:
-        path: /app/logfile.txt
-        state: touch
-
-    - name: Запустить bot.py
-      become: yes
-      shell: |
-        cd /home/ansible/bot
-        export $(cat /home/ansible/bot/.env | xargs) && python3 bot.py
+- hosts: localhost 
+  tasks: 
+    - name: Конвертировать .env.yml в формат .env 
+      shell: | 
+        awk -F ': ' '{gsub(/"/, "", $2); gsub(/: /, "=", $1); print $1 "=" $2}' ./.env.yml > ./.env 
+ 
+- hosts: db_host 
+  vars_files: 
+    - ./.env.yml 
+  tasks: 
+    - name: Убедиться, что зависимости Python установлены 
+      become: yes 
+      apt: 
+        name: 
+          - python3-pip 
+          - libpq-dev 
+          - python3-dev 
+        state: present 
+ 
+    - name: Установить psycopg2 
+      become: yes 
+      pip: 
+        name: psycopg2-binary 
+        state: present 
+ 
+    - name: Установить PostgreSQL 
+      become: yes 
+      package: 
+        name: postgresql 
+        state: latest 
+ 
+    - name: Перезапустить PostgreSQL 
+      become: yes 
+      service: 
+        name: postgresql 
+        state: restarted 
+ 
+    - name: Включить службу PostgreSQL 
+      become: true 
+      systemd: 
+        name: postgresql 
+        state: started 
+        enabled: yes 
+        daemon-reload: yes 
+ 
+    - name: Установить пароль для пользователя PostgreSQL "{{ DB_USER }}" 
+      become: yes 
+      become_user: postgres 
+      shell: "psql -c \"ALTER USER {{ DB_USER }} WITH PASSWORD '{{ DB_PASSWORD }}';\"" 
+ 
+    - name: Убедиться, что база данных существует 
+      become: yes 
+      become_user: postgres 
+      postgresql_db: 
+        name: "{{ DB_DATABASE }}" 
+        state: present 
+ 
+    - name: Изменить pg_hba для разрешения удаленной аутентификации 
+      become: yes 
+      become_user: postgres 
+      postgresql_pg_hba: 
+        dest: "/etc/postgresql/{{ DB_VERSION }}/main/pg_hba.conf" 
+        contype: "host" 
+        databases: "all" 
+        users: "all" 
+        source: "0.0.0.0/0" 
+        method: "md5" 
+        create: true 
+ 
+    - name: Изменить pg_hba для разрешения удаленной репликации 
+      become: yes 
+      become_user: postgres 
+      postgresql_pg_hba: 
+        dest: "/etc/postgresql/{{ DB_VERSION }}/main/pg_hba.conf" 
+        contype: "host" 
+        databases: "replication" 
+        users: "all" 
+        source: "0.0.0.0/0" 
+        method: "md5" 
+        create: true 
+ 
+    - name: Изменить postgresql.conf 
+      become: yes 
+      become_user: postgres 
+      community.postgresql.postgresql_set: 
+        name: "{{ item.key }}" 
+        value: "{{ item.value }}" 
+      with_dict: 
+        max_connections: '100' 
+        listen_addresses: '*' 
+        log_replication_commands: 'on' 
+        unix_socket_directories: '/var/run/postgresql' 
+        logging_collector: 'on' 
+        log_directory: '/tmp/' 
+        log_filename: 'pg.log' 
+        log_file_mode: '0664' 
+        wal_level: 'replica' 
+        max_wal_senders: '10' 
+        wal_log_hints: 'on' 
+        password_encryption: 'scram-sha-256' 
+ 
+    - name: Проверить, существует ли пользователь репликации 
+      become: yes 
+      become_user: postgres 
+      command: "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='{{ DB_REPL_USER }}'\"" 
+      register: repl_user_check 
+      failed_when: repl_user_check.rc not in [0, 1] 
+      changed_when: repl_user_check.stdout.strip() == '1' 
+      ignore_errors: true 
+ 
+    - name: Создать пользователя репликации '{{ DB_REPL_USER }}' с паролем '{{ DB_REPL_PASSWORD }}' 
+      become: yes 
+      become_user: postgres 
+      command: "psql -c \"CREATE USER {{ DB_REPL_USER }} REPLICATION LOGIN ENCRYPTED PASSWORD '{{ DB_REPL_PASSWORD }}';\"" 
+      when: repl_user_check.stdout.strip() != '1' 
+      ignore_errors: yes 
+ 
+    - name: Создать таблицы, если они не существуют 
+      become: yes 
+      become_user: postgres 
+      postgresql_query: 
+        db: "{{ DB_DATABASE }}" 
+        query: | 
+          CREATE TABLE IF NOT EXISTS Email_add( 
+            id SERIAL PRIMARY KEY, 
+            EmailAddr VARCHAR(255) 
+          ); 
+          CREATE TABLE IF NOT EXISTS Ph_number( 
+            id SERIAL PRIMARY KEY, 
+            PhoneNumber VARCHAR(20) 
+          ); 
+        login_user: "{{ DB_USER }}" 
+        login_password: "{{ DB_PASSWORD }}" 
+ 
+- hosts: db_repl_host 
+  vars_files: 
+    - .env.yml 
+  tasks: 
+    - name: Установить PostgreSQL 
+      become: yes 
+      package: 
+        name: postgresql 
+        state: latest 
+ 
+    - name: Остановить службу PostgreSQL 
+      become: yes 
+      systemd: 
+        name: postgresql 
+        state: stopped 
+ 
+    - name: Очистить директорию репликации 
+      become: yes 
+      ansible.builtin.file: 
+        state: absent 
+        path: /var/lib/postgresql/{{ DB_VERSION }}/main 
+ 
+    - name: Начать базовое резервное копирование с мастера 
+      become: yes 
+      become_user: postgres 
+      shell: pg_basebackup -R -h "{{ DB_HOST }}" -U "{{ DB_REPL_USER }}" -D /var/lib/postgresql/"{{ DB_VERSION }}"/main -P 
+      environment: 
+        PGPASSWORD: "{{ DB_REPL_PASSWORD }}" 
+ 
+    - name: Включить службу PostgreSQL 
+      become: true 
+      systemd: 
+        name: postgresql 
+        state: started 
+        enabled: yes 
+        daemon-reload: yes 
+ 
+- hosts: bot_host 
+  tasks: 
+    - name: Установить Git и pip3 
+      become: yes 
+      apt: 
+        pkg: 
+          - git 
+          - python3-pip 
+          - libpq-dev 
+ 
+    - name: Создать директорию проекта 
+      become: yes 
+      file: 
+        path: /home/ansible/bot/ 
+        state: directory 
+ 
+    - name: Клонировать репозиторий 
+      become: yes 
+      git: 
+        repo: "https://github.com/Disketusha/DevOps_TelegramBot.git" 
+        dest: "/home/ansible/bot/" 
+        version: main 
+        force: yes 
+ 
+    - name: Установить модули Python 
+      become: yes 
+      pip: 
+        name: 
+          - python-telegram-bot==13.14 
+          - paramiko==2.12.0 
+          - psycopg2-binary==2.9.3 
+          - python-dotenv==0.21.0 
+ 
+    - name: Скопировать файл .env на BOT_HOST 
+      become: yes 
+      copy: 
+        src: ".env" 
+        dest: "/home/ansible/bot/.env" 
+ 
+    - name: Создать директорию для логов 
+      become: yes 
+      file: 
+        path: /app/ 
+        state: directory 
+ 
+    - name: Создать файл логов 
+      become: yes 
+      file: 
+        path: /app/logfile.txt 
+        state: touch 
+ 
+    - name: Запустить bot.py 
+      become: yes 
+      shell: | 
+        cd /home/ansible/bot 
+        export $(cat /home/ansible/bot/.env | xargs) && python3 bot.py 
