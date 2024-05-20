@@ -29,6 +29,17 @@
         name: postgresql 
         state: latest 
  
+<<<<<<< HEAD
+=======
+    - name: Добавить listen_addresses в postgresql.conf 
+      become: yes 
+      lineinfile: 
+        path: "/etc/postgresql/{{ DB_VERSION }}/main/postgresql.conf" 
+        regexp: "^#?listen_addresses" 
+        line: "listen_addresses = '*'" 
+        state: present 
+ 
+>>>>>>> a676e20 (FINALLL)
     - name: Перезапустить PostgreSQL 
       become: yes 
       service: 
@@ -132,6 +143,7 @@
         login_user: "{{ DB_USER }}" 
         login_password: "{{ DB_PASSWORD }}" 
  
+<<<<<<< HEAD
 - hosts: db_repl_host 
   vars_files: 
     - .env.yml 
@@ -224,4 +236,104 @@
       become: yes 
       shell: | 
         cd /home/ansible/bot 
+=======
+    - name: Перезапустить PostgreSQL еще раз после всех изменений 
+      become: yes 
+      service: 
+        name: postgresql 
+        state: restarted 
+  
+- hosts: db_repl_host  
+  vars_files:  
+    - .env.yml  
+  tasks:  
+    - name: Установить PostgreSQL  
+      become: yes  
+      package:  
+        name: postgresql  
+        state: latest  
+  
+    - name: Остановить службу PostgreSQL  
+      become: yes  
+      systemd:  
+        name: postgresql  
+        state: stopped  
+  
+    - name: Очистить директорию репликации  
+      become: yes  
+      ansible.builtin.file:  
+        state: absent  
+        path: /var/lib/postgresql/{{ DB_VERSION }}/main  
+  
+    - name: Начать базовое резервное копирование с мастера  
+      become: yes  
+      become_user: postgres  
+      shell: pg_basebackup -R -h "{{ DB_HOST }}" -U "{{ DB_REPL_USER }}" -D /var/lib/postgresql/"{{ DB_VERSION }}"/main -P  
+      environment:  
+        PGPASSWORD: "{{ DB_REPL_PASSWORD }}"  
+  
+    - name: Включить службу PostgreSQL  
+      become: true  
+      systemd:  
+        name: postgresql  
+        state: started  
+        enabled: yes  
+        daemon-reload: yes  
+  
+- hosts: bot_host  
+  tasks:  
+    - name: Установить Git и pip3  
+      become: yes  
+      apt:  
+        pkg:  
+          - git  
+          - python3-pip  
+          - libpq-dev  
+  
+    - name: Создать директорию проекта  
+      become: yes  
+      file:  
+        path: /home/ansible/bot/  
+        state: directory  
+  
+    - name: Клонировать репозиторий  
+      become: yes  
+      git:  
+        repo: "https://github.com/Disketusha/DevOps_TelegramBot.git"  
+        dest: "/home/ansible/bot/"  
+        version: main  
+        force: yes  
+  
+    - name: Установить модули Python  
+      become: yes  
+      pip:  
+        name:  
+          - python-telegram-bot==13.14  
+          - paramiko==2.12.0  
+          - psycopg2-binary==2.9.3  
+          - python-dotenv==0.21.0  
+  
+    - name: Скопировать файл .env на BOT_HOST  
+      become: yes  
+      copy:  
+        src: ".env"  
+        dest: "/home/ansible/bot/.env"  
+  
+    - name: Создать директорию для логов  
+      become: yes  
+      file:  
+        path: /app/  
+        state: directory  
+  
+    - name: Создать файл логов  
+      become: yes  
+      file:  
+        path: /app/logfile.txt  
+        state: touch  
+  
+    - name: Запустить bot.py  
+      become: yes  
+      shell: |  
+        cd /home/ansible/bot  
+>>>>>>> a676e20 (FINALLL)
         export $(cat /home/ansible/bot/.env | xargs) && python3 bot.py 
